@@ -59,6 +59,12 @@ def _polynomial_coefficients_given_roots(roots):
     return poly_coeffs
 
 def _symeig_backward_partial_eigenspace(D_grad, U_grad, A, D, U):
+    # compute a projection onto the orthogonal complement of span(U).
+    # It is defined as the operator (I - UU^T)
+    Ut = U.transpose(-2, -1).contiguous()
+    proj_U_ortho = torch.matmul(-U, Ut)
+    proj_U_ortho.diagonal().add_(1)
+
     # compute the coefficients of the characteristic polynomial of the tensor D.
     # Note that D is diagonal, so the diagonal elements are exactly the roots
     # of the characteristic polynomial.
@@ -72,8 +78,6 @@ def _symeig_backward_partial_eigenspace(D_grad, U_grad, A, D, U):
         D_grad, U_grad, A, D, U
     )
 
-    proj_U_ortho = -U @ U.t()
-    proj_U_ortho.diagonal().add_(1)
     x, _ = torch.solve(proj_U_ortho, chr_poly_A)
     x = proj_U_ortho @ x
 
