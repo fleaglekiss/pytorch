@@ -89,7 +89,7 @@ def _polynomial_value(poly, x, zero_power, transition):
         res = transition(res, x, poly[..., k])
     return res
 
-def _matrix_polynomial_value(poly, x):
+def _matrix_polynomial_value(poly, x, zero_power=None):
     """
     Evaluates `poly(x)` for the (batched) matrix input `x`.
     Check out `_polynomial_value` function for more details.
@@ -101,8 +101,25 @@ def _matrix_polynomial_value(poly, x):
         res.diagonal().add_(poly_coeff)
         return res
 
-    zero_power = torch.eye(x.size(-1), x.size(-1), dtype=x.dtype, device=x.device) \
-        .view(*([1] * len(list(x.shape[:-2]))), x.size(-1), x.size(-1))
+    if zero_power is None:
+        zero_power = torch.eye(x.size(-1), x.size(-1), dtype=x.dtype, device=x.device) \
+            .view(*([1] * len(list(x.shape[:-2]))), x.size(-1), x.size(-1))
+
+    return _polynomial_value(poly, x, zero_power, transition)
+
+def _vector_polynomial_value(poly, x, zero_power=None):
+    """
+    Evaluates `poly(x)` for the (batched) vector input `x`.
+    Check out `_polynomial_value` function for more details.
+    """
+
+    # vector-aware Horner's rule iteration
+    def transition(curr_poly_val, x, poly_coeff):
+        return x * curr_poly_val + poly_coeff
+
+    if zero_power is None:
+        zero_power = x.new_ones(1).expand(x.shape)
+
     return _polynomial_value(poly, x, zero_power, transition)
 
 def _symeig_backward_partial_eigenspace(D_grad, U_grad, A, D, U, largest):
@@ -177,6 +194,11 @@ def _symeig_backward_partial_eigenspace(D_grad, U_grad, A, D, U, largest):
     res = _symeig_backward_complete_eigenspace(
         D_grad, U_grad, A, D, U
     )
+
+    # test _vector_polynomial_value
+    xx = _vector_polynomial_value(chr_poly_D, D)
+    print(xx)
+    print(D)
 
     p_res = A.new_zeros(*A.shape[:-1], D.size(-1))
     for k in range(1, chr_poly_D.size(-1)):
