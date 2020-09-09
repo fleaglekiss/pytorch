@@ -36,13 +36,14 @@ def _polynomial_coefficients_given_roots(roots):
     """
     Given `roots` of a polynomial, find the polynomial's coefficients.
 
-    If roots = {r_1, ..., r_n}, then the method returns
-    coefficients {a_0, a_1, ..., a_n (== 1)} so that
+    If roots = (r_1, ..., r_n), then the method returns
+    coefficients (a_0, a_1, ..., a_n (== 1)) so that
     p(x) = (x - r_1) * ... * (x - r_n)
          = x^n + a_{n-1} * x^{n-1} + ... a_1 * x_1 + a_0
 
     Note: for better performance requires writing a low-level kernel
     """
+
     poly_order = roots.shape[-1]
     poly_coeffs_shape = list(roots.shape)
     # we assume p(x) = x^n + a_{n-1} * x^{n-1} + ... + a_1 * x + a_0,
@@ -51,12 +52,58 @@ def _polynomial_coefficients_given_roots(roots):
     poly_coeffs = roots.new_zeros(poly_coeffs_shape)
     poly_coeffs[..., -1] = 1
 
-    # perform Horner's rule
+    # perform the Horner's rule
     for i in range(1, poly_order + 1):
         for j in range(poly_order - i - 1, poly_order):
             poly_coeffs[..., j] -= roots[..., i - 1] * poly_coeffs[..., j + 1]
 
     return poly_coeffs
+
+def _polynomial_value(poly, x, zero_power, transition):
+    """
+    A generic method for computing poly(x) using the Horner's rule.
+
+    Arguments:
+      poly (Tensor): the (possibly batched) 1D Tensor representing
+                     polynomial coefficients such that
+                     poly[..., i] = (a_{i_0}, ..., a{i_n} (== 1)), and
+                     poly(x) = poly[..., 0] * zero_power + ... + poly[..., n] * x^n
+
+      x (Tensor): the value (possible batched) to evalate the polynomial `poly` at.
+
+      zero_power (Tensor): the represenation of `x^0`. It is application-specific.
+
+      transition (Callable): the function that accepts some intermediate result `int_val`,
+                             the `x` and a specific polynomial coefficient
+                             `poly[..., k]` for some iteration `k`.
+                             It basically performs one iteration of the Horner's rule
+                             defined as `x * int_val + poly[..., k] * zero_power`.
+                             Note that `zero_power` is not a parameter,
+                             because the step `+ poly[..., k] * zero_power` depends on `x`,
+                             whether it is a vector, a matrix, or something else, so this
+                             functionality is delegated to the user.
+    """
+
+    res = zero_power.clone()
+    for k in range(poly.size(-1) - 2, -1, -1):
+        res = transition(res, x, poly[..., k])
+    return res
+
+def _matrix_polynomial_value(poly, x):
+    """
+    Evaluates `poly(x)` for the (batched) matrix input `x`.
+    Check out `_polynomial_value` function for more details.
+    """
+
+    # matrix-aware Horner's rule iteration
+    def transition(curr_poly_val, x, poly_coeff):
+        res = x.matmul(curr_poly_val)
+        res.diagonal().add_(poly_coeff)
+        return res
+
+    zero_power = torch.eye(x.size(-1), x.size(-1), dtype=x.dtype, device=x.device) \
+        .view(*([1] * len(list(x.shape[:-2]))), x.size(-1), x.size(-1))
+    return _polynomial_value(poly, x, zero_power, transition)
 
 def _symeig_backward_partial_eigenspace(D_grad, U_grad, A, D, U, largest):
     # compute a projection operator onto an orthogonal subspace spanned by the
@@ -88,9 +135,14 @@ def _symeig_backward_partial_eigenspace(D_grad, U_grad, A, D, U, largest):
     # of the characteristic polynomial.
     chr_poly_D = _polynomial_coefficients_given_roots(D)
 
-    chr_poly_D_at_A = A.new_zeros(A.shape)
-    for k in range(chr_poly_D.size(-1)):
-        chr_poly_D_at_A += chr_poly_D[k] * A.matrix_power(k)
+    # compute chr_poly_D(A) which essentially is:
+    #
+    # chr_poly_D_at_A = A.new_zeros(A.shape)
+    # for k in range(chr_poly_D.size(-1)):
+    #     chr_poly_D_at_A += chr_poly_D[k] * A.matrix_power(k)
+    #
+    # Note, however, for better performance we use the Horner's rule
+    chr_poly_D_at_A = _matrix_polynomial_value(chr_poly_D, A)
 
     # compute the action of `chr_poly_D_at_A` restricted to U_ortho
     chr_poly_D_at_A_to_U_ortho = torch.matmul(
@@ -127,7 +179,7 @@ def _symeig_backward_partial_eigenspace(D_grad, U_grad, A, D, U, largest):
     )
 
     p_res = A.new_zeros(*A.shape[:-1], D.size(-1))
-    for k in range(1, chr_poly_D.shape[-1]):
+    for k in range(1, chr_poly_D.size(-1)):
         p_res.zero_()
         for i in range(0, k):
             p_res += (A.matrix_power(k - 1 - i) @ U_grad) * D.pow(i).unsqueeze(-2)
