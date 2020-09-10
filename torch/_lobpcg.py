@@ -181,13 +181,7 @@ def _symeig_backward_partial_eigenspace(D_grad, U_grad, A, D, U, largest):
 
     x, _ = torch.solve(
         U_ortho_t,
-        torch.matmul(
-            U_ortho_t,
-            torch.matmul(
-                chr_poly_D_at_A,
-                U_ortho
-            )
-        )
+        chr_poly_D_at_A_to_U_ortho
     )
     x = U_ortho @ x
 
@@ -199,13 +193,26 @@ def _symeig_backward_partial_eigenspace(D_grad, U_grad, A, D, U, largest):
     # the code belows finds the explicit solution to the Sylvester equation
     # U_ortho^T A U_ortho X - X D = -U_ortho^T A U
     # and incorporates it into the whole gradient stored in the `res` variable.
+    #
     # Equivalent to the following naive implementation:
     # p_res = A.new_zeros(*A.shape[:-1], D.size(-1))
     # for k in range(1, chr_poly_D.size(-1)):
     #     p_res.zero_()
     #     for i in range(0, k):
     #         p_res += (A.matrix_power(k - 1 - i) @ U_grad) * D.pow(i).unsqueeze(-2)
-    #     res -= chr_poly_D[k] * (x @  p_res @ U.t())
+    #     res -= chr_poly_D[k] * (U_ortho @ poly_D_at_A.inverse() @ U_ortho_t @  p_res @ U.t())
+    #
+    # The naive implementation is based on the paper
+    # Hu, Qingxi, and Daizhan Cheng.
+    # "The polynomial solution to the Sylvester matrix equation."
+    # Applied mathematics letters 19.9 (2006): 859-864.
+    #
+    # We can modify the computation of `p_res` from above in a more efficient way
+    # p_res =   U_grad * (chr_poly_D[1] * D.pow(0) + ... + chr_poly_D[k] * D.pow(k)).unsqueeze(-2)
+    #       + A U_grad * (chr_poly_D[2] * D.pow(0) + ... + chr_poly_D[k] * D.pow(k - 1)).unsqueeze(-2)
+    #       + ...
+    #       + A.matrix_power(k - 1) U_grad * chr_poly_D[k]
+    # Note that this saves us from redundant matrix products with A (elimination of matrix_power)
     U_grad_projected = U_grad
     series_acc = U_grad_projected.new_zeros(U_grad_projected.shape)
     for k in range(1, chr_poly_D.size(-1)):
