@@ -66,7 +66,7 @@ def _polynomial_value(poly, x, zero_power, transition):
     Arguments:
       poly (Tensor): the (possibly batched) 1D Tensor representing
                      polynomial coefficients such that
-                     poly[..., i] = (a_{i_0}, ..., a{i_n} (== 1)), and
+                     poly[..., i] = (a_{i_0}, ..., a{i_n}), and
                      poly(x) = poly[..., 0] * zero_power + ... + poly[..., n] * x^n
 
       x (Tensor): the value (possible batched) to evalate the polynomial `poly` at.
@@ -84,7 +84,7 @@ def _polynomial_value(poly, x, zero_power, transition):
                              functionality is delegated to the user.
     """
 
-    res = zero_power.clone()
+    res = zero_power.clone() * poly[..., -1]
     for k in range(poly.size(-1) - 2, -1, -1):
         res = transition(res, x, poly[..., k])
     return res
@@ -115,7 +115,7 @@ def _vector_polynomial_value(poly, x, zero_power=None):
 
     # vector-aware Horner's rule iteration
     def transition(curr_poly_val, x, poly_coeff):
-        return x * curr_poly_val + poly_coeff
+        return torch.addcmul(poly_coeff, x, curr_poly_val)
 
     if zero_power is None:
         zero_power = x.new_ones(1).expand(x.shape)
@@ -195,17 +195,24 @@ def _symeig_backward_partial_eigenspace(D_grad, U_grad, A, D, U, largest):
         D_grad, U_grad, A, D, U
     )
 
-    # test _vector_polynomial_value
-    xx = _vector_polynomial_value(chr_poly_D, D)
-    print(xx)
-    print(D)
 
-    p_res = A.new_zeros(*A.shape[:-1], D.size(-1))
+    # the code belows finds the explicit solution to the Sylvester equation
+    # U_ortho^T A U_ortho X - X D = -U_ortho^T A U
+    # and incorporates it into the whole gradient stored in the `res` variable.
+    # Equivalent to the following naive implementation:
+    # p_res = A.new_zeros(*A.shape[:-1], D.size(-1))
+    # for k in range(1, chr_poly_D.size(-1)):
+    #     p_res.zero_()
+    #     for i in range(0, k):
+    #         p_res += (A.matrix_power(k - 1 - i) @ U_grad) * D.pow(i).unsqueeze(-2)
+    #     res -= chr_poly_D[k] * (x @  p_res @ U.t())
+    U_grad_projected = U_grad
+    series_acc = U_grad_projected.new_zeros(U_grad_projected.shape)
     for k in range(1, chr_poly_D.size(-1)):
-        p_res.zero_()
-        for i in range(0, k):
-            p_res += (A.matrix_power(k - 1 - i) @ U_grad) * D.pow(i).unsqueeze(-2)
-        res -= chr_poly_D[k] * (x @  p_res @ U.t())
+        poly_D = _vector_polynomial_value(chr_poly_D[..., k:], D)
+        series_acc += U_grad_projected * poly_D.unsqueeze(-2)
+        U_grad_projected = A.matmul(U_grad_projected)
+    res -= x.matmul(series_acc.matmul(Ut))
 
     return res
 
