@@ -161,6 +161,41 @@ def _symeig_backward_partial_eigenspace(D_grad, U_grad, A, D, U, largest):
     # Note, however, for better performance we use the Horner's rule
     chr_poly_D_at_A = _matrix_polynomial_value(chr_poly_D, A)
 
+    # the code belows finds the explicit solution to the Sylvester equation
+    # U_ortho^T A U_ortho dX - dX D = -U_ortho^T A U
+    # and incorporates it into the whole gradient stored in the `res` variable.
+    #
+    # Equivalent to the following naive implementation:
+    # res = A.new_zeros(A.shape)
+    # p_res = A.new_zeros(*A.shape[:-1], D.size(-1))
+    # for k in range(1, chr_poly_D.size(-1)):
+    #     p_res.zero_()
+    #     for i in range(0, k):
+    #         p_res += (A.matrix_power(k - 1 - i) @ U_grad) * D.pow(i).unsqueeze(-2)
+    #     res -= chr_poly_D[k] * (U_ortho @ poly_D_at_A.inverse() @ U_ortho_t @  p_res @ U.t())
+    #
+    # Note that dX is a differential, so the gradient contribution comes from the backward sensitivity
+    # Tr(f(U_grad, D_grad, A, U, D)^T dX) = Tr(g(U_grad, A, U, D)^T dA) for some functions f and g,
+    # and we need to compute g(U_grad, A, U, D)
+    #
+    # The naive implementation is based on the paper
+    # Hu, Qingxi, and Daizhan Cheng.
+    # "The polynomial solution to the Sylvester matrix equation."
+    # Applied mathematics letters 19.9 (2006): 859-864.
+    #
+    # We can modify the computation of `p_res` from above in a more efficient way
+    # p_res =   U_grad * (chr_poly_D[1] * D.pow(0) + ... + chr_poly_D[k] * D.pow(k)).unsqueeze(-2)
+    #       + A U_grad * (chr_poly_D[2] * D.pow(0) + ... + chr_poly_D[k] * D.pow(k - 1)).unsqueeze(-2)
+    #       + ...
+    #       + A.matrix_power(k - 1) U_grad * chr_poly_D[k]
+    # Note that this saves us from redundant matrix products with A (elimination of matrix_power)
+    U_grad_projected = U_grad
+    series_acc = U_grad_projected.new_zeros(U_grad_projected.shape)
+    for k in range(1, chr_poly_D.size(-1)):
+        poly_D = _vector_polynomial_value(chr_poly_D[..., k:], D)
+        series_acc += U_grad_projected * poly_D.unsqueeze(-2)
+        U_grad_projected = A.matmul(U_grad_projected)
+
     # compute the action of `chr_poly_D_at_A` restricted to U_ortho
     chr_poly_D_at_A_to_U_ortho = torch.matmul(
         U_ortho_t,
@@ -189,36 +224,7 @@ def _symeig_backward_partial_eigenspace(D_grad, U_grad, A, D, U, largest):
         D_grad, U_grad, A, D, U
     )
 
-
-    # the code belows finds the explicit solution to the Sylvester equation
-    # U_ortho^T A U_ortho X - X D = -U_ortho^T A U
-    # and incorporates it into the whole gradient stored in the `res` variable.
-    #
-    # Equivalent to the following naive implementation:
-    # p_res = A.new_zeros(*A.shape[:-1], D.size(-1))
-    # for k in range(1, chr_poly_D.size(-1)):
-    #     p_res.zero_()
-    #     for i in range(0, k):
-    #         p_res += (A.matrix_power(k - 1 - i) @ U_grad) * D.pow(i).unsqueeze(-2)
-    #     res -= chr_poly_D[k] * (U_ortho @ poly_D_at_A.inverse() @ U_ortho_t @  p_res @ U.t())
-    #
-    # The naive implementation is based on the paper
-    # Hu, Qingxi, and Daizhan Cheng.
-    # "The polynomial solution to the Sylvester matrix equation."
-    # Applied mathematics letters 19.9 (2006): 859-864.
-    #
-    # We can modify the computation of `p_res` from above in a more efficient way
-    # p_res =   U_grad * (chr_poly_D[1] * D.pow(0) + ... + chr_poly_D[k] * D.pow(k)).unsqueeze(-2)
-    #       + A U_grad * (chr_poly_D[2] * D.pow(0) + ... + chr_poly_D[k] * D.pow(k - 1)).unsqueeze(-2)
-    #       + ...
-    #       + A.matrix_power(k - 1) U_grad * chr_poly_D[k]
-    # Note that this saves us from redundant matrix products with A (elimination of matrix_power)
-    U_grad_projected = U_grad
-    series_acc = U_grad_projected.new_zeros(U_grad_projected.shape)
-    for k in range(1, chr_poly_D.size(-1)):
-        poly_D = _vector_polynomial_value(chr_poly_D[..., k:], D)
-        series_acc += U_grad_projected * poly_D.unsqueeze(-2)
-        U_grad_projected = A.matmul(U_grad_projected)
+    # incorporate the Sylvester equation solution into the full gradient
     res -= x.matmul(series_acc.matmul(Ut))
 
     return res
