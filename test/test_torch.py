@@ -10433,14 +10433,14 @@ class TestTorchDeviceType(TestCase):
         inputs.extend([0.75, (1,), (1, 1), (1, 2, 1)])
         inputs.extend([[float('nan')], [[float('nan'), float('nan')], [1, 2]]])
         inputs.extend([[[float('nan'), float('nan')], [float('nan'), 2]]])
-        quantiles.extend([0.5, (0., 1.), np.random.rand(10)])
+        quantiles.extend([0.5, [0., 1.], np.random.rand(10)])
 
         # Enumerate all input combinations
         for op, x, quantiles, keepdim in product(ops, inputs, quantiles, keepdims):
             if type(x) is tuple:
                 a = torch.randn(x, dtype=dtype, device=device)
                 # Make some random elements NaN
-                a.masked_fill_(torch.randint_like(a, 25) == 0, float('nan'))
+                a.masked_fill_(torch.randint_like(a, 20) == 0, float('nan'))
             else:
                 a = torch.tensor(x, dtype=dtype, device=device)
 
