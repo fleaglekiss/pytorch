@@ -205,27 +205,30 @@ def _symeig_backward_partial_eigenspace(D_grad, U_grad, A, D, U, largest):
         )
     )
     # we need to invert 'chr_poly_D_at_A_to_U_ortho`, for that we compute its
-    # Cholesky decomposition for better stability.
-    # Note that `chr_poly_D_at_A_to_U_ortho` is NEGATIVE-definite.
-    #print(torch.symeig(chr_poly_D_at_A_to_U_ortho))
-    #L_for_chr_poly_D_at_A_to_U_ortho = torch.cholesky(-chr_poly_D_at_A_to_U_ortho)
-    #x = -torch.cholesky_solve(
-    #    U_ortho_t,
-    #    L_for_chr_poly_D_at_A_to_U_ortho
-    #)
-
-    x, _ = torch.solve(
-        U_ortho_t,
-        chr_poly_D_at_A_to_U_ortho
+    # Cholesky decomposition and then use `torch.cholesky_solve` for better stability.
+    # Note that `chr_poly_D_at_A_to_U_ortho` is positive-definite if
+    # 1. `largest` == False, or
+    # 2. `largest` == True and `k` is even
+    #
+    # check if `chr_poly_D_at_A_to_U_ortho` is positive-definite or negative-definite
+    chr_poly_D_at_A_to_U_ortho_sign = -1 if (largest and (k % 2 == 1)) else +1
+    chr_poly_D_at_A_to_U_ortho_L = torch.cholesky(
+        chr_poly_D_at_A_to_U_ortho_sign * chr_poly_D_at_A_to_U_ortho
     )
-    x = U_ortho @ x
 
+    # compute the gradient part in span(U)
     res = _symeig_backward_complete_eigenspace(
         D_grad, U_grad, A, D, U
     )
 
     # incorporate the Sylvester equation solution into the full gradient
-    res -= x.matmul(series_acc.matmul(Ut))
+    # it resides in span(U_ortho)
+    res -= U_ortho.matmul(
+        chr_poly_D_at_A_to_U_ortho_sign * torch.cholesky_solve(
+            U_ortho_t,
+            chr_poly_D_at_A_to_U_ortho_L
+        )
+    ).matmul(series_acc.matmul(Ut))
 
     return res
 
@@ -299,6 +302,9 @@ class LOBPCGAutogradFunction(torch.autograd.Function):
         grads = [None] * 14
 
         A, B, D, U, largest = ctx.saved_tensors
+
+        if largest is None:
+            largest = True
 
         # symeig backward
         if B is None:
